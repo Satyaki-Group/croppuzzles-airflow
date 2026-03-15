@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pandas as pd
+
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
@@ -10,6 +12,47 @@ PROCESSED_BUCKET = "dataagritecta-processed"
 PREFIX = "snd/"
 
 
+def transform_file(local_path: str) -> None:
+    
+    df = pd.read_csv(local_path)
+
+    # Clean up string columns
+    df['Unit_Description'] = df['Unit_Description'].str.replace('[()]', '', regex=True).str.strip()
+    df['Attribute_Description'] = df['Attribute_Description'].str.strip().str.title()
+    df['Commodity_Description'] = df['Commodity_Description'].str.strip().str.title()
+    
+    # Fill missing country codes 
+    mapping = df.dropna(subset=['Country_Code']).drop_duplicates(subset=['Country_Name']).set_index('Country_Name')['Country_Code']
+    df['Country_Code'] = df['Country_Code'].fillna(df['Country_Name'].map(mapping))
+    df['Country_Code'] = df['Country_Code'].fillna(df['Country_Name'].map({'Netherlands Antilles': 'AN'}))
+
+    # Force expected data types where possible (nullable ints + strings)
+    dtype_map = {
+        "Commodity_Code": "Int64",
+        "Commodity_Description": "string",
+        "Country_Code": "string",
+        "Country_Name": "string",
+        "Market_Year": "Int64",
+        "Calendar_Year": "Int64",
+        "Month": "Int64",
+        "Attribute_ID": "Int64",
+        "Attribute_Description": "string",
+        "Unit_ID": "Int64",
+        "Unit_Description": "string",
+        "Value": "float64",
+    }
+
+    for col, dtype in dtype_map.items():
+        if col in df.columns:
+            try:
+                df[col] = df[col].astype(dtype)
+            except Exception:
+                pass
+    
+
+    df.to_csv(local_path, index=False)
+
+
 def process(**context):
     files = list_s3_files(bucket=RAW_BUCKET, prefix=PREFIX)
     print(f"Found {len(files)} files in {RAW_BUCKET}/{PREFIX}")
@@ -18,6 +61,10 @@ def process(**context):
         local_path = f"/tmp/{key.replace('/', '_')}"
         print(f"Downloading s3://{RAW_BUCKET}/{key}")
         download_from_s3(bucket=RAW_BUCKET, key=key, local_path=local_path)
+
+        if key.lower().endswith(".csv"):
+            print(f"Transforming CSV {local_path}")
+            transform_file(local_path)
 
         print(f"Uploading to s3://{PROCESSED_BUCKET}/{key}")
         upload_to_s3(local_path=local_path, bucket=PROCESSED_BUCKET, key=key)
