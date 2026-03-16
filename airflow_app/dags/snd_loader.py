@@ -15,58 +15,52 @@ def load(**context):
     cursor = None
     try:
         
-        password = "<Enter_DB_Password>"  
+         
         conn = psycopg2.connect(
-            host='agritecta-gold.c50ygk4cc3k5.eu-central-1.rds.amazonaws.com',
+            host='localhost',
             port=5432,
             database='postgres',
             user='postgres',
-            password=password,
-            sslmode='verify-full',
-            sslrootcert='/certs/global-bundle.pem'
+            password='postgres@123',
         )
         cursor = conn.cursor()
         
         files = list_s3_files(bucket=PROCESSED_BUCKET, prefix=PREFIX)
         print(f"Found {len(files)} files in {PROCESSED_BUCKET}/{PREFIX}")
+    
+        # Since snd_processor uploads one combined file, download and load that specific file
+        key = "snd/snd_corn.csv"
+        local_path = f"/tmp/{key.replace('/', '_')}"
+        print(f"Downloading s3://{PROCESSED_BUCKET}/{key}")
+        download_from_s3(bucket=PROCESSED_BUCKET, key=key, local_path=local_path)
 
-        for key in files:
-            try:
-                local_path = f"/tmp/{key.replace('/', '_')}"
-                print(f"Downloading s3://{PROCESSED_BUCKET}/{key}")
-                download_from_s3(bucket=PROCESSED_BUCKET, key=key, local_path=local_path)
+        table_name = "snd_corn"
 
-                table_name = key.replace('/', '_').replace('.csv', '')
+        create_sql = f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            Commodity_Code BIGINT,
+            Commodity_Description TEXT,
+            Country_Code TEXT,
+            Country_Name TEXT,
+            Market_Year BIGINT,
+            Calendar_Year BIGINT,
+            Month BIGINT,
+            Attribute_ID BIGINT,
+            Attribute_Description TEXT,
+            Unit_ID BIGINT,
+            Unit_Description TEXT,
+            Value DOUBLE PRECISION
+        );
+        """
+        cursor.execute(create_sql)
+        conn.commit()
 
-                create_sql = f"""
-                CREATE TABLE IF NOT EXISTS {table_name} (
-                    Commodity_Code BIGINT,
-                    Commodity_Description TEXT,
-                    Country_Code TEXT,
-                    Country_Name TEXT,
-                    Market_Year BIGINT,
-                    Calendar_Year BIGINT,
-                    Month BIGINT,
-                    Attribute_ID BIGINT,
-                    Attribute_Description TEXT,
-                    Unit_ID BIGINT,
-                    Unit_Description TEXT,
-                    Value DOUBLE PRECISION
-                );
-                """
-                cursor.execute(create_sql)
-                conn.commit()
+        # Insert data using COPY
+        with open(local_path, 'r') as f:
+            cursor.copy_expert(f"COPY {table_name} FROM STDIN WITH CSV HEADER", f)
+        conn.commit()
 
-                # Insert data using COPY
-                with open(local_path, 'r') as f:
-                    cursor.copy_expert(f"COPY {table_name} FROM STDIN WITH CSV HEADER", f)
-                conn.commit()
-
-                print(f"Inserted data into table {table_name}")
-            except Exception as e:
-                print(f"Error processing file {key}: {e}")
-                if conn:
-                    conn.rollback()
+        print(f"Inserted data into table {table_name}")
 
     except psycopg2.Error as e:
         print(f"Database connection or operation error: {e}")
@@ -77,7 +71,7 @@ def load(**context):
             cursor.close()
         if conn:
             conn.close()
-        print(f"Done. Processed {len(files) if 'files' in locals() else 0} files")
+        print("Done. Processed the combined file")
 
 
 with DAG(
