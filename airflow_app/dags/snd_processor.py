@@ -12,10 +12,8 @@ PROCESSED_BUCKET = "dataagritecta-processed"
 PREFIX = "snd/"
 
 
-def transform_file(local_path: str) -> None:
+def transform_df(df: pd.DataFrame) -> pd.DataFrame:
     
-    df = pd.read_csv(local_path)
-
     # Clean up string columns
     df['Unit_Description'] = df['Unit_Description'].str.replace('[()]', '', regex=True).str.strip()
     df['Attribute_Description'] = df['Attribute_Description'].str.strip().str.title()
@@ -49,27 +47,39 @@ def transform_file(local_path: str) -> None:
             except Exception:
                 pass
     
+    df.duplicated().sum()
 
-    df.to_csv(local_path, index=False)
+    return df
 
 
 def process(**context):
     files = list_s3_files(bucket=RAW_BUCKET, prefix=PREFIX)
     print(f"Found {len(files)} files in {RAW_BUCKET}/{PREFIX}")
 
+    dfs = []
+
     for key in files:
         local_path = f"/tmp/{key.replace('/', '_')}"
         print(f"Downloading s3://{RAW_BUCKET}/{key}")
         download_from_s3(bucket=RAW_BUCKET, key=key, local_path=local_path)
 
-        if key.lower().endswith(".csv"):
-            print(f"Transforming CSV {local_path}")
-            transform_file(local_path)
+        df = pd.read_csv(local_path)
+        df = df[df['Commodity_Description'].str.contains('corn|soybean', case=False, na=False)]
+        dfs.append(df)
 
-        print(f"Uploading to s3://{PROCESSED_BUCKET}/{key}")
-        upload_to_s3(local_path=local_path, bucket=PROCESSED_BUCKET, key=key)
+    df = pd.concat(dfs, ignore_index=True)
 
-    print(f"Done. Moved {len(files)} files to {PROCESSED_BUCKET}")
+    # Pass the combined dataframe to transform function
+    df = transform_df(df)
+
+    
+    local_path = "/tmp/snd_corn.csv"
+    df.to_csv(local_path, index=False)
+
+    print(f"Uploading to s3://{PROCESSED_BUCKET}/snd/snd_corn.csv")
+    upload_to_s3(local_path=local_path, bucket=PROCESSED_BUCKET, key="snd/snd_corn.csv")
+
+    print("Done.")
 
 
 with DAG(
