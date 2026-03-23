@@ -1,4 +1,5 @@
 import os
+import shutil
 from datetime import datetime
 
 import pandas as pd
@@ -71,8 +72,6 @@ def process(**context):
 
     for year_prefix in year_prefixes:
         year = year_prefix.rstrip("/").split("/")[-1]
-        if year != "2025":
-            continue
 
         month_prefixes = list_s3_prefixes(bucket=RAW_BUCKET, prefix=year_prefix)
 
@@ -102,6 +101,7 @@ def process(**context):
             print(f"Uploading to s3://{PROCESSED_BUCKET}/{remote_path}")
             upload_df_to_s3(df_transformed, PROCESSED_BUCKET, remote_path)
 
+            shutil.rmtree(local_dir)
             print(f"Done: {year}/{month}")
 
 
