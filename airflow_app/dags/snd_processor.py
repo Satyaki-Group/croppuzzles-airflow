@@ -1,11 +1,12 @@
+import os
 from datetime import datetime
 
 import pandas as pd
-
+from pathlib import PurePosixPath
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
-from helpers.s3_helper import list_s3_files, download_from_s3, upload_to_s3
+from helpers.s3_helper import list_s3_prefixes, download_from_s3, upload_df_to_s3
 
 RAW_BUCKET = "dataagritecta-raw"
 PROCESSED_BUCKET = "dataagritecta-processed"
@@ -52,34 +53,56 @@ def transform_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def process(**context):
-    files = list_s3_files(bucket=RAW_BUCKET, prefix=PREFIX)
-    print(f"Found {len(files)} files in {RAW_BUCKET}/{PREFIX}")
+CSV_FILES = ["psd_oilseeds.csv", "psd_alldata.csv", "psd_grains_pulses.csv"]
 
+
+def read_csv(local_dir: str) -> pd.DataFrame:
     dfs = []
-
-    for key in files:
-        local_path = f"/tmp/{key.replace('/', '_')}"
-        print(f"Downloading s3://{RAW_BUCKET}/{key}")
-        download_from_s3(bucket=RAW_BUCKET, key=key, local_path=local_path)
-
-        df = pd.read_csv(local_path)
+    for filename in CSV_FILES:
+        df = pd.read_csv(os.path.join(local_dir, filename))
         df = df[df['Commodity_Description'].str.contains('corn|soybean', case=False, na=False)]
         dfs.append(df)
+    return pd.concat(dfs, ignore_index=True)
 
-    df = pd.concat(dfs, ignore_index=True)
 
-    # Pass the combined dataframe to transform function
-    df = transform_df(df)
+def process(**context):
+    year_prefixes = list_s3_prefixes(bucket=RAW_BUCKET, prefix=PREFIX)
+    print(f"Found {len(year_prefixes)} year(s) under {RAW_BUCKET}/{PREFIX}")
 
-    
-    local_path = "/tmp/snd_corn.csv"
-    df.to_csv(local_path, index=False)
+    for year_prefix in year_prefixes:
+        year = year_prefix.rstrip("/").split("/")[-1]
+        if year != "2025":
+            continue
 
-    print(f"Uploading to s3://{PROCESSED_BUCKET}/snd/snd_corn.csv")
-    upload_to_s3(local_path=local_path, bucket=PROCESSED_BUCKET, key="snd/snd_corn.csv")
+        month_prefixes = list_s3_prefixes(bucket=RAW_BUCKET, prefix=year_prefix)
 
-    print("Done.")
+        for month_prefix in month_prefixes:
+            # month_prefix looks like "snd/2025/01/"
+            parts = month_prefix.rstrip("/").split("/")
+            year, month = parts[-2], parts[-1]
+
+            local_dir = f"/tmp/snd_{year}_{month}"
+            os.makedirs(local_dir, exist_ok=True)
+
+            # Download all 3 CSVs into local_dir
+            for filename in CSV_FILES:
+                s3_key = f"{month_prefix}{filename}"
+                local_file = os.path.join(local_dir, filename)
+                print(f"Downloading s3://{RAW_BUCKET}/{s3_key}")
+                download_from_s3(bucket=RAW_BUCKET, key=s3_key, local_path=local_file)
+
+            # Concatenate
+            df_combined = read_csv(local_dir)
+
+            # Transform
+            df_transformed = transform_df(df_combined)
+
+            # Upload to matching path in processed bucket
+            remote_path = str(PurePosixPath("snd", year, month, "combined_cleaned.parquet"))
+            print(f"Uploading to s3://{PROCESSED_BUCKET}/{remote_path}")
+            upload_df_to_s3(df_transformed, PROCESSED_BUCKET, remote_path)
+
+            print(f"Done: {year}/{month}")
 
 
 with DAG(

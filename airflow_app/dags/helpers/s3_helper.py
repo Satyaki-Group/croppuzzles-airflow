@@ -1,13 +1,14 @@
 import os
 import boto3
-
+import pandas as pd
+from io import BytesIO
 
 def get_s3_client():
     return boto3.client(
         "s3",
         aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
-        aws_session_token=os.environ.get("AWS_SESSION_TOKEN"),
+        # aws_session_token=os.environ.get("AWS_SESSION_TOKEN"),
     )
 
 
@@ -37,3 +38,10 @@ def list_s3_prefixes(bucket: str, prefix: str = "") -> list[str]:
 def upload_to_s3(local_path: str, bucket: str, key: str) -> None:
     client = get_s3_client()
     client.upload_file(local_path, bucket, key)
+
+def upload_df_to_s3(df: pd.DataFrame, bucket: str, key: str):
+    buffer = BytesIO()
+    df.to_parquet(buffer, index=False)
+    buffer.seek(0)
+    client = get_s3_client()
+    client.put_object(Bucket=bucket, Key=key, Body=buffer.getvalue())
